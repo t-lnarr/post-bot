@@ -11,7 +11,7 @@ from telegram.ext import (
 )
 
 # --- SABİT BİLGİLER ---
-TOKEN = "7530124206:AAGdSrlW8tTT9o56gKR1xKL3WasupvnYgnU"
+TOKEN = "7890738118:AAEsCMdlel_LzG06cgxeBGLDOIt0EKqANlM"
 ADMIN_IDS = [7172270461]
 CHANNEL_ID = "@igro_lab"
 
