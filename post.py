@@ -1,82 +1,184 @@
 import os
 import asyncio
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
-TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_ID = int(os.environ.get("ADMIN_ID"))
-CHANNEL_ID = os.environ.get("CHANNEL_ID")
+# Railway environment variables
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
-post_data = {}
+# Global değişkenler
+post_gorevi = None
+son_mesaj_id = None
+kaydedilen_mesaj = None
+post_suresi = None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start komutu"""
     if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Bu botu sadece admin kullanabilir.")
         return
+    
+    keyboard = [[InlineKeyboardButton("📝 Post Oluştur", callback_data="yeni_post")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
-        "Merhaba admin 😎\n"
-        "/post <dakika> yazarak otomatik post başlatabilirsin."
+        "Merhaba! Oto-post botuna hoş geldin.\n\n"
+        "Kullanım:\n"
+        "• Post Oluştur: Yeni oto-post başlat\n"
+        "• /stop: Oto-postu durdur",
+        reply_markup=reply_markup
     )
 
-async def post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    if not context.args:
-        await update.message.reply_text("Örnek kullanım: /post 10")
-        return
-
-    minutes = int(context.args[0])
-    post_data["interval"] = minutes * 60
-
-    await update.message.reply_text(
-        "Şimdi gönderilecek mesajı at.\n"
-        "(Fotoğraflı veya normal mesaj olabilir)"
+async def yeni_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Post oluşturma başlat"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data['adim'] = 'mesaj_bekle'
+    await query.edit_message_text(
+        "📩 Göndermek istediğin mesajı yaz veya görseli gönder:"
     )
 
-async def get_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def mesaj_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Kullanıcıdan mesaj al"""
     if update.effective_user.id != ADMIN_ID:
         return
+    
+    global kaydedilen_mesaj
+    
+    adim = context.user_data.get('adim')
+    
+    if adim == 'mesaj_bekle':
+        # Mesajı kaydet
+        kaydedilen_mesaj = update.message
+        context.user_data['adim'] = 'sure_bekle'
+        
+        await update.message.reply_text(
+            "✅ Mesaj kaydedildi!\n\n"
+            "⏰ Kaç saniyede bir gönderilsin?\n"
+            "Örnek: 300 (5 dakika)"
+        )
+    
+    elif adim == 'sure_bekle':
+        global post_suresi, post_gorevi
+        
+        try:
+            post_suresi = int(update.message.text)
+            
+            if post_suresi < 10:
+                await update.message.reply_text("❌ Süre en az 10 saniye olmalı!")
+                return
+            
+            # Oto-post başlat
+            post_gorevi = asyncio.create_task(oto_post_loop(context.application.bot))
+            
+            await update.message.reply_text(
+                f"✅ Oto-post başlatıldı!\n\n"
+                f"📊 Her {post_suresi} saniyede bir gönderilecek.\n"
+                f"🛑 Durdurmak için /stop yaz."
+            )
+            
+            context.user_data.clear()
+            
+        except ValueError:
+            await update.message.reply_text("❌ Lütfen sadece sayı gir! Örnek: 300")
 
-    post_data["message"] = update.message
-
-    if not post_data.get("running"):
-        post_data["running"] = True
-        asyncio.create_task(auto_post(context))
-
-    await update.message.reply_text("Otomatik post başladı 🚀")
-
-async def auto_post(context: ContextTypes.DEFAULT_TYPE):
+async def oto_post_loop(bot):
+    """Oto-post döngüsü"""
+    global son_mesaj_id
+    
     while True:
-        msg = post_data["message"]
+        try:
+            # Eski mesajı sil
+            if son_mesaj_id:
+                try:
+                    await bot.delete_message(chat_id=CHANNEL_ID, message_id=son_mesaj_id)
+                except:
+                    pass
+            
+            # Yeni mesaj gönder
+            if kaydedilen_mesaj.photo:
+                sent = await bot.send_photo(
+                    chat_id=CHANNEL_ID,
+                    photo=kaydedilen_mesaj.photo[-1].file_id,
+                    caption=kaydedilen_mesaj.caption
+                )
+            elif kaydedilen_mesaj.video:
+                sent = await bot.send_video(
+                    chat_id=CHANNEL_ID,
+                    video=kaydedilen_mesaj.video.file_id,
+                    caption=kaydedilen_mesaj.caption
+                )
+            elif kaydedilen_mesaj.document:
+                sent = await bot.send_document(
+                    chat_id=CHANNEL_ID,
+                    document=kaydedilen_mesaj.document.file_id,
+                    caption=kaydedilen_mesaj.caption
+                )
+            else:
+                sent = await bot.send_message(
+                    chat_id=CHANNEL_ID,
+                    text=kaydedilen_mesaj.text
+                )
+            
+            son_mesaj_id = sent.message_id
+            print(f"✅ Mesaj gönderildi: {son_mesaj_id}")
+            
+        except Exception as e:
+            print(f"❌ Hata: {e}")
+        
+        await asyncio.sleep(post_suresi)
 
-        if msg.photo:
-            await context.bot.send_photo(
-                chat_id=CHANNEL_ID,
-                photo=msg.photo[-1].file_id,
-                caption=msg.caption
-            )
-        else:
-            await context.bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=msg.text
-            )
-
-        await asyncio.sleep(post_data["interval"])
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Oto-postu durdur"""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Bu botu sadece admin kullanabilir.")
+        return
+    
+    global post_gorevi, son_mesaj_id, kaydedilen_mesaj, post_suresi
+    
+    if post_gorevi:
+        post_gorevi.cancel()
+        post_gorevi = None
+        
+        # Son mesajı sil
+        if son_mesaj_id:
+            try:
+                await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=son_mesaj_id)
+                son_mesaj_id = None
+            except:
+                pass
+        
+        kaydedilen_mesaj = None
+        post_suresi = None
+        
+        keyboard = [[InlineKeyboardButton("📝 Yeni Post Oluştur", callback_data="yeni_post")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            "🛑 Oto-post durduruldu ve mesaj silindi!",
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text("❌ Zaten aktif bir post yok!")
 
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-
+    """Botu başlat"""
+    if not BOT_TOKEN or not CHANNEL_ID or not ADMIN_ID:
+        print("❌ HATA: Environment variables eksik!")
+        print("Gerekli: BOT_TOKEN, CHANNEL_ID, ADMIN_ID")
+        return
+    
+    app = Application.builder().token(BOT_TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("post", post))
-    app.add_handler(MessageHandler(filters.ALL, get_message))
-
-    print("Bot Railway'de çalışıyor 🔥")
+    app.add_handler(CommandHandler("stop", stop))
+    app.add_handler(CallbackQueryHandler(yeni_post_callback, pattern="yeni_post"))
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, mesaj_al))
+    
+    print("✅ Bot başlatıldı!")
     app.run_polling()
 
 if __name__ == "__main__":
